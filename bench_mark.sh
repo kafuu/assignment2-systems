@@ -1,0 +1,11 @@
+python ./cs336-systems/benchmark.py \
+    --d_model 768 \
+    --d_ff 3072 \
+    --num_layers 12 \
+    --num_heads 12 \
+    --rope_theta 10000 \
+    --vocab_size 10000 \
+    --batch_size 4 \
+    --context_length 256 \
+    --warmup_steps 5 \
+    --num_steps 100 \
