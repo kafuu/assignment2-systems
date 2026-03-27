@@ -17,6 +17,7 @@ def flash_fwd_kernel(
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
+    IS_CAUSAL: tl.constexpr
     ):
     """
     Q: Batch Nq(sequence) d_attn
@@ -91,21 +92,26 @@ def flash_fwd_kernel(
     Out_tile = tl.zeros((Q_TILE_SIZE,D),
                         dtype=tl.float32)
     
-    for _ in range(tl.cdiv(N_KEYS,K_TILE_SIZE)):
+    for ks in range(tl.cdiv(N_KEYS,K_TILE_SIZE)):
         K_tile = tl.load(K_block_ptr,boundary_check=(0,1),padding_option="zero")
         V_tile = tl.load(V_block_ptr,boundary_check=(0,1),padding_option="zero")        
-        S:tl.tensor = Q_tile @ tl.trans(K_tile,(0,1)) * scale
+        S = tl.dot(Q_tile, tl.trans(K_tile)) * scale
+        
+        if IS_CAUSAL:
+            Q_idx = query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)[:,None]
+            K_idx = ks * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)[None,:]
+            S = tl.where(K_idx > Q_idx, tl.full(S.shape,-1e6, dtype= tl.float32), S)
 
-        Max_new = tl.maximum(Max,S.max(axis=-1))
+        Max_new = tl.maximum(Max,tl.max(S,axis=-1))
         alpha = tl.exp(Max - Max_new)
         exped_dmax_S = tl.exp(S - Max_new[:,None])
 
-        Sum = alpha * Sum + exped_dmax_S.sum(axis=-1)
-        Out_tile = alpha[:,None] * Out_tile + exped_dmax_S @ V_tile
+        Sum = alpha * Sum + tl.sum(exped_dmax_S,axis=-1)
+        Out_tile = alpha[:,None] * Out_tile + tl.dot(exped_dmax_S, V_tile)
         Max = Max_new
         
-        K_block_ptr.advance((K_TILE_SIZE,0))
-        V_block_ptr.advance((K_TILE_SIZE,0))
+        K_block_ptr = K_block_ptr.advance((K_TILE_SIZE,0))
+        V_block_ptr = V_block_ptr.advance((K_TILE_SIZE,0))
         
     Out_tile = Out_tile / Sum[:, None]    
     logSumExp = tl.log(Sum) + Max
@@ -146,6 +152,7 @@ class FlashAttentionTriton(torch.autograd.Function):
             D=D,
             Q_TILE_SIZE=Q_TILE_SIZE,
             K_TILE_SIZE=K_TILE_SIZE,
+            IS_CAUSAL=is_causal
         )
 
         ctx.save_for_backward(L, Q, K, V, O)

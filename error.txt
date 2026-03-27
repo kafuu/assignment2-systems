@@ -1,0 +1,93 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
+rootdir: /root/autodl-tmp/assignment2-systems
+configfile: pyproject.toml
+plugins: jaxtyping-0.3.9, anyio-4.9.0
+collected 16 items / 14 deselected / 2 selected
+
+tests/test_attention.py::test_flash_forward_pass_triton[False] FAILED
+tests/test_attention.py::test_flash_forward_pass_triton[True] FAILED
+
+=================================== FAILURES ===================================
+____________________ test_flash_forward_pass_triton[False] _____________________
+
+is_causal = False
+
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason="A GPU must be available to run Triton kernels",
+    )
+    @pytest.mark.parametrize("is_causal", [False, True])
+    def test_flash_forward_pass_triton(is_causal):
+>       _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda", is_causal=is_causal)
+
+tests/test_attention.py:70: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+impl = <bound method Function.apply of <class 'cs336_systems.flash_attention.FlashAttentionTriton'>>
+device = 'cuda', is_causal = False
+
+    def _test_flash_forward_pass(impl, device="cpu", is_causal=False):
+        q, k, v, _do = _make_attn_inputs(device)
+        o = impl(q, k, v, is_causal)
+    
+        # Extract L from the saved tensors
+        assert o.grad_fn.saved_tensors is not None, "No saved tensors found in the output tensor. Make sure your autograd forward is saving them using ctx.save_for_backward."
+        maybe_ls = [t for t in o.grad_fn.saved_tensors if t.shape == (q.shape[0], q.shape[1])]
+    
+        assert len(maybe_ls) == 1, f"Expected one tensor of shape {q.shape[0], q.shape[1]} in saved tensors, but found {len(maybe_ls)}. The tests require you to save exactly one tensor of this shape, corresponding to the log-sum-exp of the attention scores."
+        l = maybe_ls[0]
+    
+        o_ref, l_ref = _attention_and_lse(q, k, v, is_causal)
+    
+>       torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
+E       AssertionError: Tensor-likes are not close!
+E       
+E       Mismatched elements: 32146 / 32768 (98.1%)
+E       Greatest absolute difference: 1.781456708908081 at index (2, 37, 56) (up to 0.01 allowed)
+E       Greatest relative difference: 5.530890464782715 at index (2, 104, 62) (up to 0.01 allowed)
+
+tests/test_attention.py:56: AssertionError
+_____________________ test_flash_forward_pass_triton[True] _____________________
+
+is_causal = True
+
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason="A GPU must be available to run Triton kernels",
+    )
+    @pytest.mark.parametrize("is_causal", [False, True])
+    def test_flash_forward_pass_triton(is_causal):
+>       _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda", is_causal=is_causal)
+
+tests/test_attention.py:70: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+impl = <bound method Function.apply of <class 'cs336_systems.flash_attention.FlashAttentionTriton'>>
+device = 'cuda', is_causal = True
+
+    def _test_flash_forward_pass(impl, device="cpu", is_causal=False):
+        q, k, v, _do = _make_attn_inputs(device)
+        o = impl(q, k, v, is_causal)
+    
+        # Extract L from the saved tensors
+        assert o.grad_fn.saved_tensors is not None, "No saved tensors found in the output tensor. Make sure your autograd forward is saving them using ctx.save_for_backward."
+        maybe_ls = [t for t in o.grad_fn.saved_tensors if t.shape == (q.shape[0], q.shape[1])]
+    
+        assert len(maybe_ls) == 1, f"Expected one tensor of shape {q.shape[0], q.shape[1]} in saved tensors, but found {len(maybe_ls)}. The tests require you to save exactly one tensor of this shape, corresponding to the log-sum-exp of the attention scores."
+        l = maybe_ls[0]
+    
+        o_ref, l_ref = _attention_and_lse(q, k, v, is_causal)
+    
+>       torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
+E       AssertionError: Tensor-likes are not close!
+E       
+E       Mismatched elements: 32157 / 32768 (98.1%)
+E       Greatest absolute difference: 3.308680772781372 at index (3, 0, 53) (up to 0.01 allowed)
+E       Greatest relative difference: 70340.2421875 at index (1, 30, 39) (up to 0.01 allowed)
+
+tests/test_attention.py:56: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_attention.py::test_flash_forward_pass_triton[False] - Asser...
+FAILED tests/test_attention.py::test_flash_forward_pass_triton[True] - Assert...
+======================= 2 failed, 14 deselected in 2.84s =======================
