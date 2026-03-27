@@ -44,19 +44,26 @@ class ToyModel(nn.Module):
         return x
     
 if __name__ == "__main__":
-    with torch.autocast(device_type="cuda",dtype=torch.bfloat16):
-        model = ToyModel(32,16)
-        model.to("cuda")
-        print("参数精度：")
-        print("fc1",model.fc1.weight.dtype)
-        print("ln",model.ln.weight.dtype)
-        print("fc2",model.fc2.weight.dtype)
-        out = model(torch.rand(32).cuda())
-        print("logits:",out.dtype)
-        loss = nn.functional.cross_entropy(out,torch.rand(16).cuda())
-        print("loss:",loss.dtype)
-        loss.backward()
 
-        print("model grad:",model.fc1.weight.grad.dtype)
+    x = torch.tensor([10, 20, 30])
+
+    print("x:", x)
+    print("x.shape:", x.shape)
+
+    print("\nx[:, None]:")
+    print(x[:, None])
+    print(x[:, None].shape)
+
+    print("\nx[None, :]:")
+    print(x[None, :])
+    print(x[None, :].shape)
+
+    print("\nunsqueeze(0):")
+    print(x.unsqueeze(0))
+    print(x.unsqueeze(0).shape)
+
+    print("\nunsqueeze(1):")
+    print(x.unsqueeze(1))
+    print(x.unsqueeze(1).shape)
 
 
