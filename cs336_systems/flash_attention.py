@@ -119,6 +119,69 @@ def flash_fwd_kernel(
     tl.store(O_block_ptr,value=Out_tile,boundary_check=(0,1))
     tl.store(L_block_ptr,value=logSumExp,boundary_check=(0,))
         
+def flash_backward(Q, K, V, O, dO, L, block_size=16, causal=False):
+    N, D = Q.shape
+    scale = 1.0 / math.sqrt(D)
+
+    dQ = torch.zeros_like(Q)
+    dK = torch.zeros_like(K)
+    dV = torch.zeros_like(V)
+
+    # D vector: [B, H, N]
+    Dvec = torch.sum(dO * O, dim=-1)
+
+    for i in range(0, N, block_size):
+        i_end = min(i + block_size, N)
+
+        Qi = Q[ i:i_end, :]       # [B,H,Br,D]
+        dOi = dO[ i:i_end, :]
+        Li = L[ i:i_end]          # [B,H,Br]
+        Di = Dvec[ i:i_end]       # [B,H,Br]
+
+        dQi = torch.zeros_like(Qi)
+
+        for j in range(0, N, block_size):
+            j_end = min(j + block_size, N)
+
+            Kj = K[j:j_end, :]   # [B,H,Bc,D]
+            Vj = V[j:j_end, :]
+            Bc = j_end - j
+
+            # scores
+            S = scale * torch.matmul(Qi, Kj.transpose(-2, -1))   # [B,H,Br,Bc]
+
+            # causal mask
+            if causal:
+                q_idx = torch.arange(i, i_end, device=Q.device)
+                k_idx = torch.arange(j, j_end, device=Q.device)
+                mask = q_idx[:, None] >= k_idx[None, :]           # [Br,Bc]
+                S = torch.where(mask, S, torch.full_like(S, float('-inf')))
+
+            # reconstruct P from L
+            P = torch.exp(S - Li[..., None])   # [B,H,Br,Bc]
+            if causal:
+                # exp(-inf) 本身就是 0，这句可不要
+                P = torch.nan_to_num(P, nan=0.0)
+
+            # dV += P^T @ dO
+            dV[j:j_end, :] += torch.matmul(P.transpose(-2, -1), dOi)
+
+            # dP = dO @ V^T
+            dP = torch.matmul(dOi, Vj.transpose(-2, -1))   # [B,H,Br,Bc]
+
+            # dS = P * (dP - D_i)
+            dS = P * (dP - Di[..., :, None])
+
+            # dQ += scale * dS @ K
+            dQi += scale * torch.matmul(dS, Kj)
+
+            # dK += scale * dS^T @ Q
+            dK[j:j_end, :] += scale * torch.matmul(dS.transpose(-2, -1), Qi)
+
+        dQ[i:i_end, :] = dQi
+
+    return dQ, dK, dV
+        
 class FlashAttentionTriton(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
@@ -242,4 +305,6 @@ class FlashAttnTorch(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
-        raise NotImplementedError
+        Q, K, V, O, L = ctx.saved_tensors
+        dQ, dK, dV = flash_backward(Q, K, V, O, dO, L)
+        return dQ, dK, dV, None, None

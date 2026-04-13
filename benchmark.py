@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch import Tensor
 from jaxtyping import Float, Bool, Int
 from einops import rearrange, einsum
+import torch.nn.functional as F
 
 
 from cs336_basics.optimizer import AdamW
@@ -18,6 +19,7 @@ from cs336_basics.nn_utils import clip_gradient
 import cs336_basics.model
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.nn_utils import cross_entropy, softmax
+from cs336_systems.flash_attention import FlashAttentionTriton
 
 @nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(
@@ -61,7 +63,52 @@ def annotated_scaled_dot_product_attention(
 
     return out
 
-cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+def triton_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys    d_k"],
+    V: Float[Tensor, " ... keys    d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+):
+    prefix = Q.shape[:-2]
+    Nq, D = Q.shape[-2:]
+    Nk = K.shape[-2]
+    Dv = V.shape[-1]
+
+    batch = math.prod(prefix) if len(prefix) > 0 else 1
+
+    Q_ = Q.reshape(batch, Nq, D)
+    K_ = K.reshape(batch, Nk, D)
+    V_ = V.reshape(batch, Nk, Dv)
+
+    # 这里只是为了先跑通 benchmark
+    is_causal = mask is not None
+
+    with torch.no_grad():
+        O_ = FlashAttentionTriton.apply(Q_, K_, V_, is_causal)
+
+    return O_.reshape(*prefix, Nq, Dv)
+
+
+def py_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys    d_k"],
+    V: Float[Tensor, " ... keys    d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+):
+    print(">>> py_attention called")
+    is_causal = mask is not None
+
+    # 如果你的 mask 只是 causal mask，那么直接用 is_causal 即可
+    # 不把 mask 真传进去，避免和 is_causal 冲突
+    return F.scaled_dot_product_attention(
+        Q, K, V,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=is_causal,
+    )
+    
+
+cs336_basics.model.scaled_dot_product_attention = py_attention
 
 @nvtx.range("bench mark")
 def run_benchmark(args):
@@ -99,8 +146,10 @@ def run_benchmark(args):
     # 3. 预热阶段 (Warm-up) - 建立缓存，不计入时间
     # -----------------------------------------------------------------
     print(f"Running {args.warmup_steps} warm-up steps...")
+    context = nullcontext() if args.measure_backward else torch.no_grad()
     for _ in range(args.warmup_steps):
-        logits = model(x)
+        with context:
+            logits = model(x)
         if args.measure_backward:
             loss = cross_entropy(logits, y) 
             loss.backward()
@@ -117,13 +166,17 @@ def run_benchmark(args):
     if args.measure_backward:
         optimizer = AdamW(model.parameters(), lr=6e-4, weight_decay=0.1)
     
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    
     for _ in range(args.num_steps):
         # 记录起点
         start_time = timeit.default_timer()
         
         # 执行前向 (Forward)
         with nvtx.range("Benchmark: forwards"):
-            logits = model(x)
+            with context:
+                logits = model(x)
             torch.cuda.synchronize()    
         
 
@@ -149,10 +202,11 @@ def run_benchmark(args):
         step_time = end_time - start_time
         timings.append(step_time)
 
-
     # -----------------------------------------------------------------
     # 5. 统计与报告
     # -----------------------------------------------------------------
+    print("peak allocated:", torch.cuda.max_memory_allocated() / 1024**3, "GB")
+    print("peak reserved :", torch.cuda.max_memory_reserved() / 1024**3, "GB")
     avg_time = np.mean(timings)
     std_time = np.std(timings)
     

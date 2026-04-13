@@ -7,17 +7,17 @@
 #测试类型
 MODE="test"
 # 定义你要测试的上下文长度数组
-CONTEXT_LENGTHS=(512)
+CONTEXT_LENGTHS=(4096 8192 16384 32768 65536 131072)
 # 定义你要测试的模型尺寸
-MODEL_SIZES=("large")
+MODEL_SIZES=("small")
 # 模型自动精度
-AUTO_PRECISION="true"
+AUTO_PRECISION="false"
 # 显存记录
 MEM_RECORD="false"
 # 反向传播
-BACK="true"
+BACK="false"
 # 自动编译
-AUTO_COMPILER="true"
+AUTO_COMPILER="false"
 
 
 
