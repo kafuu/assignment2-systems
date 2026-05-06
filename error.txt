@@ -1,15 +1,16 @@
-============================= test session starts ==============================
+=================================================================== test session starts ===================================================================
 platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
 rootdir: /root/autodl-tmp/assignment2-systems
 configfile: pyproject.toml
 plugins: jaxtyping-0.3.9, anyio-4.9.0
-collected 16 items / 14 deselected / 2 selected
+collected 16 items / 13 deselected / 3 selected
 
-tests/test_attention.py::test_flash_forward_pass_triton[False] FAILED
-tests/test_attention.py::test_flash_forward_pass_triton[True] FAILED
+tests/test_attention.py::test_flash_backward_pytorch PASSED
+tests/test_attention.py::test_flash_backward_triton[False] FAILED
+tests/test_attention.py::test_flash_backward_triton[True] FAILED
 
-=================================== FAILURES ===================================
-____________________ test_flash_forward_pass_triton[False] _____________________
+======================================================================== FAILURES =========================================================================
+____________________________________________________________ test_flash_backward_triton[False] ____________________________________________________________
 
 is_causal = False
 
@@ -18,37 +19,63 @@ is_causal = False
         reason="A GPU must be available to run Triton kernels",
     )
     @pytest.mark.parametrize("is_causal", [False, True])
-    def test_flash_forward_pass_triton(is_causal):
->       _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda", is_causal=is_causal)
-
-tests/test_attention.py:70: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-impl = <bound method Function.apply of <class 'cs336_systems.flash_attention.FlashAttentionTriton'>>
-device = 'cuda', is_causal = False
-
-    def _test_flash_forward_pass(impl, device="cpu", is_causal=False):
-        q, k, v, _do = _make_attn_inputs(device)
-        o = impl(q, k, v, is_causal)
+    def test_flash_backward_triton(is_causal):
+        dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal, device='cuda')
     
-        # Extract L from the saved tensors
-        assert o.grad_fn.saved_tensors is not None, "No saved tensors found in the output tensor. Make sure your autograd forward is saving them using ctx.save_for_backward."
-        maybe_ls = [t for t in o.grad_fn.saved_tensors if t.shape == (q.shape[0], q.shape[1])]
-    
-        assert len(maybe_ls) == 1, f"Expected one tensor of shape {q.shape[0], q.shape[1]} in saved tensors, but found {len(maybe_ls)}. The tests require you to save exactly one tensor of this shape, corresponding to the log-sum-exp of the attention scores."
-        l = maybe_ls[0]
-    
-        o_ref, l_ref = _attention_and_lse(q, k, v, is_causal)
-    
->       torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
-E       AssertionError: Tensor-likes are not close!
-E       
-E       Mismatched elements: 32146 / 32768 (98.1%)
-E       Greatest absolute difference: 1.781456708908081 at index (2, 37, 56) (up to 0.01 allowed)
-E       Greatest relative difference: 5.530890464782715 at index (2, 104, 62) (up to 0.01 allowed)
+        q, k, v, do = _make_attn_inputs(device='cuda')
+>       get_flashattention_autograd_function_triton().apply(q, k, v, is_causal).backward(do)
 
-tests/test_attention.py:56: AssertionError
-_____________________ test_flash_forward_pass_triton[True] _____________________
+tests/test_attention.py:100: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/root/miniconda3/lib/python3.12/site-packages/torch/_tensor.py:648: in backward
+    torch.autograd.backward(
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/__init__.py:353: in backward
+    _engine_run_backward(
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/graph.py:824: in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/function.py:307: in apply
+    return user_fn(self, *args)
+           ^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+ctx = <torch.autograd.function.FlashAttentionTritonBackward object at 0x7f407028caf0>
+grad_outputs = (tensor([[[ 0.3516, -1.4171, -0.8349,  ...,  0.8940, -0.9160,  1.1919],
+         [ 1.8954,  0.8559, -0.3503,  ...,  1...., -0.1341,  0.1396],
+         [-0.0959, -0.4121, -0.0330,  ..., -0.7023, -0.2348,  1.9046]]],
+       device='cuda:0'),)
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Any) -> Any:
+        r"""Define a formula for differentiating the operation with backward mode automatic differentiation.
+    
+        This function is to be overridden by all subclasses.
+        (Defining this function is equivalent to defining the ``vjp`` function.)
+    
+        It must accept a context :attr:`ctx` as the first argument, followed by
+        as many outputs as the :func:`forward` returned (None will be passed in
+        for non tensor outputs of the forward function),
+        and it should return as many tensors, as there were inputs to
+        :func:`forward`. Each argument is the gradient w.r.t the given output,
+        and each returned value should be the gradient w.r.t. the
+        corresponding input. If an input is not a Tensor or is a Tensor not
+        requiring grads, you can just pass None as a gradient for that input.
+    
+        The context can be used to retrieve tensors saved during the forward
+        pass. It also has an attribute :attr:`ctx.needs_input_grad` as a tuple
+        of booleans representing whether each input needs gradient. E.g.,
+        :func:`backward` will have ``ctx.needs_input_grad[0] = True`` if the
+        first input to :func:`forward` needs gradient computed w.r.t. the
+        output.
+        """
+>       raise NotImplementedError(
+            "You must implement either the backward or vjp method for "
+            "your custom autograd.Function to use it with backward "
+            "mode AD."
+        )
+E       NotImplementedError: You must implement either the backward or vjp method for your custom autograd.Function to use it with backward mode AD.
+
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/function.py:431: NotImplementedError
+____________________________________________________________ test_flash_backward_triton[True] _____________________________________________________________
 
 is_causal = True
 
@@ -57,37 +84,69 @@ is_causal = True
         reason="A GPU must be available to run Triton kernels",
     )
     @pytest.mark.parametrize("is_causal", [False, True])
-    def test_flash_forward_pass_triton(is_causal):
->       _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda", is_causal=is_causal)
-
-tests/test_attention.py:70: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-impl = <bound method Function.apply of <class 'cs336_systems.flash_attention.FlashAttentionTriton'>>
-device = 'cuda', is_causal = True
-
-    def _test_flash_forward_pass(impl, device="cpu", is_causal=False):
-        q, k, v, _do = _make_attn_inputs(device)
-        o = impl(q, k, v, is_causal)
+    def test_flash_backward_triton(is_causal):
+        dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal, device='cuda')
     
-        # Extract L from the saved tensors
-        assert o.grad_fn.saved_tensors is not None, "No saved tensors found in the output tensor. Make sure your autograd forward is saving them using ctx.save_for_backward."
-        maybe_ls = [t for t in o.grad_fn.saved_tensors if t.shape == (q.shape[0], q.shape[1])]
-    
-        assert len(maybe_ls) == 1, f"Expected one tensor of shape {q.shape[0], q.shape[1]} in saved tensors, but found {len(maybe_ls)}. The tests require you to save exactly one tensor of this shape, corresponding to the log-sum-exp of the attention scores."
-        l = maybe_ls[0]
-    
-        o_ref, l_ref = _attention_and_lse(q, k, v, is_causal)
-    
->       torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
-E       AssertionError: Tensor-likes are not close!
-E       
-E       Mismatched elements: 32157 / 32768 (98.1%)
-E       Greatest absolute difference: 3.308680772781372 at index (3, 0, 53) (up to 0.01 allowed)
-E       Greatest relative difference: 70340.2421875 at index (1, 30, 39) (up to 0.01 allowed)
+        q, k, v, do = _make_attn_inputs(device='cuda')
+>       get_flashattention_autograd_function_triton().apply(q, k, v, is_causal).backward(do)
 
-tests/test_attention.py:56: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_attention.py::test_flash_forward_pass_triton[False] - Asser...
-FAILED tests/test_attention.py::test_flash_forward_pass_triton[True] - Assert...
-======================= 2 failed, 14 deselected in 2.84s =======================
+tests/test_attention.py:100: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/root/miniconda3/lib/python3.12/site-packages/torch/_tensor.py:648: in backward
+    torch.autograd.backward(
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/__init__.py:353: in backward
+    _engine_run_backward(
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/graph.py:824: in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/function.py:307: in apply
+    return user_fn(self, *args)
+           ^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+ctx = <torch.autograd.function.FlashAttentionTritonBackward object at 0x7f403c0c1bf0>
+grad_outputs = (tensor([[[ 0.3516, -1.4171, -0.8349,  ...,  0.8940, -0.9160,  1.1919],
+         [ 1.8954,  0.8559, -0.3503,  ...,  1...., -0.1341,  0.1396],
+         [-0.0959, -0.4121, -0.0330,  ..., -0.7023, -0.2348,  1.9046]]],
+       device='cuda:0'),)
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Any) -> Any:
+        r"""Define a formula for differentiating the operation with backward mode automatic differentiation.
+    
+        This function is to be overridden by all subclasses.
+        (Defining this function is equivalent to defining the ``vjp`` function.)
+    
+        It must accept a context :attr:`ctx` as the first argument, followed by
+        as many outputs as the :func:`forward` returned (None will be passed in
+        for non tensor outputs of the forward function),
+        and it should return as many tensors, as there were inputs to
+        :func:`forward`. Each argument is the gradient w.r.t the given output,
+        and each returned value should be the gradient w.r.t. the
+        corresponding input. If an input is not a Tensor or is a Tensor not
+        requiring grads, you can just pass None as a gradient for that input.
+    
+        The context can be used to retrieve tensors saved during the forward
+        pass. It also has an attribute :attr:`ctx.needs_input_grad` as a tuple
+        of booleans representing whether each input needs gradient. E.g.,
+        :func:`backward` will have ``ctx.needs_input_grad[0] = True`` if the
+        first input to :func:`forward` needs gradient computed w.r.t. the
+        output.
+        """
+>       raise NotImplementedError(
+            "You must implement either the backward or vjp method for "
+            "your custom autograd.Function to use it with backward "
+            "mode AD."
+        )
+E       NotImplementedError: You must implement either the backward or vjp method for your custom autograd.Function to use it with backward mode AD.
+
+/root/miniconda3/lib/python3.12/site-packages/torch/autograd/function.py:431: NotImplementedError
+==================================================================== warnings summary =====================================================================
+tests/test_attention.py::test_flash_backward_triton[False]
+  /root/miniconda3/lib/python3.12/site-packages/torch/autograd/graph.py:824: UserWarning: Attempting to run cuBLAS, but there was no current CUDA context! Attempting to set the primary context... (Triggered internally at /pytorch/aten/src/ATen/cuda/CublasHandlePool.cpp:181.)
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================================================= short test summary info =================================================================
+FAILED tests/test_attention.py::test_flash_backward_triton[False] - NotImplementedError: You must implement either the backward or vjp method for your c...
+FAILED tests/test_attention.py::test_flash_backward_triton[True] - NotImplementedError: You must implement either the backward or vjp method for your cu...
+================================================== 2 failed, 1 passed, 13 deselected, 1 warning in 2.29s ==================================================
